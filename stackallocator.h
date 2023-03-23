@@ -34,17 +34,6 @@ class List {
     Node* end;
     size_t sz;
 
-    void push_back(const T& value) {
-        Node* node = new Node(end->prev, alloc.allocate(1));
-        try {
-            new (node->value) T(value);
-        } catch (...) {
-            alloc.deallocate(node->value, 1);
-            delete node;
-            throw;
-        }
-    }
-
    public:
     template <typename T1>
     class BaseIterator {
@@ -93,24 +82,120 @@ class List {
         }
     };
 
+    void clear() {
+        while (end->next != end) {
+            end->next->clear(alloc);
+            delete end->next;
+        }
+    }
+
     List(Allocator alloc) : alloc(alloc), end(Node()), sz(0) {}
     List(size_t n, const T& value, Allocator alloc)
         : alloc(alloc), end(Node()), sz(0) {
-        for (int i = 0; i < n; i++) {
-            push_back(value);
-        }  // TODO
+        try {
+            for (int i = 0; i < n; i++) {
+                push_back(value);
+            }
+        } catch (...) {
+            clear();
+            throw;
+        }
     }
     List(size_t n, Allocator alloc) : List(n, T(), alloc) {}
     List() : List(Allocator()) {}
     List(size_t n, const T& value) : List(n, value, Allocator()) {}
     List(size_t n, Allocator alloc) : List(n, T(), Allocator()) {}
 
-    Allocator& get_allocator() { return alloc; }
+    List(const List& other) : alloc(std::allocator_traits<Allocator>::select_on_container_copy_construction(other.alloc)), end(Node()), sz(0) {
+        if (&other == this)
+            return;
+        try {
+            for (iterator it = other.begin(); it != other.end(); it++) {
+                push_back(*it);
+            }
+        } catch (...) {
+            clear();
+            throw;
+        }
+    }
+
+    List& operator=(const List& other) {
+        if (&other == this)
+            return;
+        if (std::allocator_traits<Allocator>::propagate_on_container_copy_assignment::value) {
+            alloc = std::allocator_traits<Allocator>::select_on_container_copy_construction(other.alloc);
+        } else
+            alloc = other.alloc;
+        end = Node();
+        sz = 0;
+        try {  // TODO:copypaste
+            for (iterator it = other.begin(); it != other.end(); it++) {
+                push_back(*it);
+            }
+        } catch (...) {
+            clear();
+            throw;
+        }
+    }
+
+    Allocator& get_allocator() const { return alloc; }
 
     using iterator = BaseIterator<T>;
     using const_iterator = BaseIterator<const T>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+    iterator begin() { return iterator(end->next); }
+    const_iterator begin() const { return cbegin(); }
+    iterator end() { return iterator(end); }
+    const_iterator end() const { return cend(); }
+    const_iterator cbegin() const { return const_iterator(end->next); }
+    const_iterator cend() const { return const_iterator(end); }
+    reverse_iterator rbegin() { return reverse_iterator(iterator(end->prev)); }
+    const_reverse_iterator rbegin() const { return crbegin(); }
+    reverse_iterator rend() { return reverse_iterator(iterator(end)); }
+    const_reverse_iterator rend() const { return crend(); }
+    const_reverse_iterator crbegin() const { return const_reverse_iterator(const_iterator(end->prev)); }
+    const_reverse_iterator crend() const { return const_reverse_iterator(const_iterator(end)); }
+
+    size_t size() const { return sz; }
+
+    iterator insert(const_iterator pos, const T& value) {
+        Node* node = new Node(pos->node, alloc.allocate(1));
+        try {
+            std::allocator_traits<Allocator>::construct(alloc, node->value, value);
+        } catch (...) {
+            alloc.deallocate(node->value, 1);
+            delete node;
+            throw;
+        }
+        sz++;
+        return iterator(node);
+    }
+
+    void push_back(const T& value) {
+        insert(const_iterator(end->prev), value);
+    }
+    void push_front(const T& value) {
+        insert(const_iterator(end), value);
+    }
+
+    iterator erase(iterator pos) {
+        pos->node->clear(alloc);
+        iterator res(pos->node->next);
+        delete pos->node;
+    }
+    void pop_front() {
+        erase(iterator(end->next));
+    }
+    void pop_back() {
+        erase(iterator(end->prev));
+    }
+
+    ~List() {
+        clear();
+        delete end;
+    }
 };
 
 template <std::size_t N>
@@ -171,30 +256,3 @@ struct StackAllocator {
         using other = StackAllocator<U, N>;
     };
 };
-
-/*
-Конструкторы: без параметров; от одного числа; от числа и const T&; от одного
-аллокатора; от числа и аллокатора; от числа, const T& и аллокатора. Если
-создается пустой лист, то не должно быть никаких выделений динамической памяти,
-независимо от того, на каком аллокаторе построен этот лист. Метод
-get_allocator(), возвращающий объект аллокатора, используемый в листе на данный
-момент; Конструктор копирования, деструктор, копирующий оператор присваивания;
-Метод size(), работающий за O(1);
-Методы push_back, push_front, pop_back, pop_front;
-Двунаправленные итераторы, удовлетворяющие требованиям
-https://en.cppreference.com/w/cpp/named_req/BidirectionalIterator. Также
-поддержите константные и reverse-итераторы; Методы begin, end, cbegin, cend,
-rbegin, rend, crbegin, crend; Методы insert(iterator, const T&), а также
-erase(iterator) - для удаления и добавления одиночных элементов в список. Если
-аллокатор является структурой без каких-либо полей, то такой аллокатор не должен
-увеличивать sizeof объекта листа. То есть тривиальный аллокатор как поле листа
-должен занимать 0 байт.
-
-Все методы листа должны быть строго безопасны относительно исключений. Это
-означает, что при выбросе исключения из любого метода класса T во время
-произвольной операции X над листом лист должен вернуться в состояние, которое
-было до начала выполнения X, не допустив UB и утечек памяти, и пробросить
-исключение наверх в вызывающую функцию. Можно считать, что конструкторы и
-операторы присваивания у аллокаторов исключений никогда не кидают (это является
-частью требований к Allocator).
-*/
